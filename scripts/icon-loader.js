@@ -21,7 +21,6 @@ const CONFIG = {
 // Get the current base URL
 function getBaseUrl() {
     const baseUrl = window.location.origin + window.location.pathname.replace(/\/[^\/]*$/, '/');
-    console.log(`🌍 Base URL: ${baseUrl}`);
     return baseUrl;
 }
 
@@ -32,127 +31,228 @@ async function loadSVG(url) {
         if (!response.ok) throw new Error(`HTTP ${response.status}`);
         return await response.text();
     } catch (error) {
-        console.warn(`Could not load SVG: ${url}`, error);
         return null;
     }
 }
 
-// Parse directory listing HTML to extract SVG files
-function parseDirectoryListing(html) {
-    const svgFiles = [];
-    
-    // Multiple patterns to catch different server directory listing formats
-    const patterns = [
-        // Apache directory listing
-        /href="([^"]*\.svg)"/gi,
-        // Nginx directory listing  
-        /<a[^>]+href="([^"]*\.svg)"[^>]*>/gi,
-        // IIS directory listing
-        /href=["']([^"']*\.svg)["']/gi,
-        // Generic HTML link patterns
-        /<a[^>]*>([^<]*\.svg)<\/a>/gi
-    ];
-    
-    for (const pattern of patterns) {
-        let match;
-        while ((match = pattern.exec(html)) !== null) {
-            const filename = match[1];
-            if (filename && filename.endsWith('.svg') && !filename.includes('/')) {
-                svgFiles.push(filename);
-            }
-        }
-    }
-    
-    // Remove duplicates and sort
-    return [...new Set(svgFiles)].sort();
-}
-
-// Try to auto-discover files from directory listing
-async function autoDiscoverFromDirectory(folder) {
+// Method 1: Try to load icons-index.json (if it exists)
+async function tryIndexFile() {
     const baseUrl = getBaseUrl();
-    const dirUrl = `${baseUrl}icons/${folder}/`;
     
     try {
-        console.log(`📂 Checking directory: ${dirUrl}`);
-        const response = await fetch(dirUrl);
+        console.log('📋 Checking for icons-index.json...');
+        const response = await fetch(`${baseUrl}icons-index.json`);
         
         if (!response.ok) {
-            console.log(`❌ Directory listing not accessible: ${response.status}`);
+            console.log('📋 No icons-index.json found, trying other methods...');
             return [];
         }
         
-        const html = await response.text();
-        const svgFiles = parseDirectoryListing(html);
+        const indexData = await response.json();
+        console.log(`📋 Found icons-index.json with ${indexData.length} icons`);
         
-        if (svgFiles.length === 0) {
-            console.log(`📁 No SVG files found in directory listing for ${folder}`);
-            return [];
+        // Add timestamp check if available
+        const indexTimestamp = indexData._generated || 0;
+        const hoursSinceGenerated = (Date.now() - indexTimestamp) / (1000 * 60 * 60);
+        
+        if (hoursSinceGenerated > 24) {
+            console.log('⚠️ Index file is over 24 hours old, consider regenerating');
         }
         
-        console.log(`🎯 Found ${svgFiles.length} SVG files in ${folder}:`, svgFiles);
-        
-        // Load each discovered SVG file
         const icons = [];
-        for (const filename of svgFiles) {
-            const iconName = filename.replace('.svg', '');
-            const iconUrl = `${dirUrl}${filename}`;
+        const failedIcons = [];
+        
+        for (const item of indexData) {
+            // Skip metadata
+            if (item.name && item.category && item.path) {
+                const iconUrl = `${baseUrl}${item.path}`;
+                const svgContent = await loadSVG(iconUrl);
+                
+                if (svgContent) {
+                    icons.push({
+                        name: item.name,
+                        category: item.category,
+                        svg: svgContent,
+                        path: item.path,
+                        fullUrl: iconUrl
+                    });
+                    console.log(`✅ Loaded from index: ${item.name}`);
+                } else {
+                    failedIcons.push(item.name);
+                    console.warn(`❌ Icon in index but file missing: ${item.name}`);
+                }
+            }
+        }
+        
+        // If many icons failed to load, the index might be outdated
+        if (failedIcons.length > 0) {
+            console.warn(`⚠️ ${failedIcons.length} icons in index but not found on server. Index may be outdated.`);
+            console.warn('💡 Tip: Delete icons-index.json to force fresh discovery, or run createIconsIndex() to regenerate');
+        }
+        
+        return icons;
+        
+    } catch (error) {
+        console.log('📋 Index file method failed, trying alternatives...');
+        return [];
+    }
+}
+
+// Method 2: GitHub API discovery (for GitHub Pages)
+async function tryGitHubAPI() {
+    const hostname = window.location.hostname;
+    const pathname = window.location.pathname;
+    
+    if (!hostname.includes('github.io')) {
+        return [];
+    }
+    
+    try {
+        // Extract owner and repo from GitHub Pages URL
+        const owner = hostname.split('.')[0];
+        const pathParts = pathname.split('/').filter(part => part);
+        const repo = pathParts[0] || `${owner}.github.io`;
+        
+        console.log(`🐙 Trying GitHub API: ${owner}/${repo}`);
+        
+        const icons = [];
+        
+        for (const folder of CONFIG.iconFolders) {
+            const apiUrl = `https://api.github.com/repos/${owner}/${repo}/contents/icons/${folder}`;
             
-            console.log(`📥 Loading: ${iconName}`);
-            const svgContent = await loadSVG(iconUrl);
-            
-            if (svgContent) {
-                icons.push({
-                    name: iconName,
-                    category: folder,
-                    svg: svgContent,
-                    path: `icons/${folder}/${filename}`,
-                    fullUrl: iconUrl
-                });
-                console.log(`✅ Loaded: ${iconName}`);
-            } else {
-                console.log(`❌ Failed to load: ${iconName}`);
+            try {
+                const response = await fetch(apiUrl);
+                if (!response.ok) continue;
+                
+                const contents = await response.json();
+                const svgFiles = contents.filter(item => 
+                    item.type === 'file' && item.name.endsWith('.svg')
+                );
+                
+                console.log(`🐙 GitHub API found ${svgFiles.length} SVG files in ${folder}`);
+                
+                for (const file of svgFiles) {
+                    const iconName = file.name.replace('.svg', '');
+                    const svgContent = await loadSVG(file.download_url);
+                    
+                    if (svgContent) {
+                        icons.push({
+                            name: iconName,
+                            category: folder,
+                            svg: svgContent,
+                            path: `icons/${folder}/${file.name}`,
+                            fullUrl: `${getBaseUrl()}icons/${folder}/${file.name}`
+                        });
+                        console.log(`✅ GitHub API loaded: ${iconName}`);
+                    }
+                }
+            } catch (error) {
+                console.log(`🐙 GitHub API failed for ${folder}:`, error.message);
             }
         }
         
         return icons;
         
     } catch (error) {
-        console.log(`❌ Directory access failed for ${folder}:`, error.message);
+        console.log('🐙 GitHub API method failed:', error.message);
         return [];
     }
 }
 
-// Alternative: Try to use FileSystem API (modern browsers, local files)
-async function tryFileSystemAccess(folder) {
-    if (!('showDirectoryPicker' in window)) {
-        return [];
-    }
-    
-    try {
-        // This would require user interaction, so not automatic
-        // Keeping for future reference
-        return [];
-    } catch (error) {
-        return [];
-    }
-}
-
-// Main discovery function
-async function autoDiscoverIcons() {
-    console.log('🔍 Starting automatic icon discovery...');
-    const allIcons = [];
+// Method 3: Directory listing (for local servers)
+async function tryDirectoryListing() {
+    const baseUrl = getBaseUrl();
+    const icons = [];
     
     for (const folder of CONFIG.iconFolders) {
-        console.log(`\n📁 Processing folder: ${folder}`);
-        
-        // Try directory listing
-        const directoryIcons = await autoDiscoverFromDirectory(folder);
-        allIcons.push(...directoryIcons);
-        
-        console.log(`📊 Found ${directoryIcons.length} icons in ${folder}`);
+        try {
+            const dirUrl = `${baseUrl}icons/${folder}/`;
+            const response = await fetch(dirUrl);
+            
+            if (!response.ok) continue;
+            
+            const html = await response.text();
+            const svgMatches = html.match(/href="([^"]*\.svg)"/g) || [];
+            const svgFiles = svgMatches.map(match => 
+                match.match(/href="([^"]*)"/)[1]
+            ).filter(file => file.endsWith('.svg'));
+            
+            console.log(`📂 Directory listing found ${svgFiles.length} SVG files in ${folder}`);
+            
+            for (const filename of svgFiles) {
+                const iconName = filename.replace('.svg', '');
+                const iconUrl = `${dirUrl}${filename}`;
+                const svgContent = await loadSVG(iconUrl);
+                
+                if (svgContent) {
+                    icons.push({
+                        name: iconName,
+                        category: folder,
+                        svg: svgContent,
+                        path: `icons/${folder}/${filename}`,
+                        fullUrl: iconUrl
+                    });
+                    console.log(`✅ Directory listing loaded: ${iconName}`);
+                }
+            }
+        } catch (error) {
+            console.log(`📂 Directory listing failed for ${folder}:`, error.message);
+        }
     }
     
-    return allIcons;
+    return icons;
+}
+
+// Main discovery function - tries all methods
+async function smartDiscoverIcons() {
+    console.log('🔍 Starting smart icon discovery...');
+    
+    // Try Method 1: Index file (unless skipped)
+    if (!window._skipIndex) {
+        let icons = await tryIndexFile();
+        if (icons.length > 0) {
+            console.log(`🎯 Success! Used icons-index.json (${icons.length} icons)`);
+            return icons;
+        }
+    }
+    
+    // Try Method 2: GitHub API
+    let icons = await tryGitHubAPI();
+    if (icons.length > 0) {
+        console.log(`🎯 Success! Used GitHub API (${icons.length} icons)`);
+        return icons;
+    }
+    
+    // Try Method 3: Directory listing
+    icons = await tryDirectoryListing();
+    if (icons.length > 0) {
+        console.log(`🎯 Success! Used directory listing (${icons.length} icons)`);
+        return icons;
+    }
+    
+    console.log('❌ All discovery methods failed');
+    return [];
+}
+
+// Generate icons-index.json content for easy setup
+function generateIndexFile(discoveredIcons) {
+    const indexData = [
+        // Add metadata
+        {
+            _generated: Date.now(),
+            _timestamp: new Date().toISOString(),
+            _totalIcons: discoveredIcons.length,
+            _note: "Auto-generated by icon-loader.js. Delete this file to force fresh discovery."
+        },
+        // Add actual icon data
+        ...discoveredIcons.map(icon => ({
+            name: icon.name,
+            category: icon.category,
+            path: icon.path
+        }))
+    ];
+    
+    return JSON.stringify(indexData, null, 2);
 }
 
 // Initialize the icon library
@@ -164,37 +264,44 @@ async function initializeIconLibrary() {
         if (iconsGrid) {
             iconsGrid.innerHTML = `
                 <div style="text-align: center; padding: 2rem; color: #64748b;">
-                    <div style="margin-bottom: 1rem;">🔍 Auto-discovering icons...</div>
-                    <div style="font-size: 0.9rem; opacity: 0.7;">Scanning icon folders automatically</div>
+                    <div style="margin-bottom: 1rem;">🔍 Smart discovery in progress...</div>
+                    <div style="font-size: 0.9rem; opacity: 0.7;">Trying multiple discovery methods</div>
                 </div>
             `;
         }
         
-        // Auto-discover all icons
-        const discoveredIcons = await autoDiscoverIcons();
+        // Smart discovery
+        const discoveredIcons = await smartDiscoverIcons();
         
         if (discoveredIcons.length === 0) {
             if (iconsGrid) {
                 iconsGrid.innerHTML = `
                     <div style="text-align: center; padding: 3rem; color: #f59e0b;">
-                        <h3>🤔 Auto-Discovery Not Supported</h3>
-                        <p>Your web server doesn't support automatic file discovery.</p>
+                        <h3>🤔 No Icons Auto-Discovered</h3>
+                        <p>For GitHub Pages, create an <code>icons-index.json</code> file:</p>
                         
                         <div style="background: #fffbeb; border: 1px solid #fbbf24; padding: 1.5rem; border-radius: 8px; margin: 1.5rem 0; text-align: left;">
-                            <h4 style="margin-top: 0; color: #92400e;">💡 Solutions:</h4>
+                            <h4 style="margin-top: 0; color: #92400e;">📝 Quick Setup for GitHub Pages:</h4>
                             <ol style="margin: 0.5rem 0; padding-left: 1.5rem; color: #92400e;">
-                                <li><strong>Local Development:</strong> Use a server like <code>python -m http.server</code> or <code>npx http-server</code></li>
-                                <li><strong>Apache/Nginx:</strong> Enable directory listing in server config</li>
-                                <li><strong>GitHub Pages:</strong> Unfortunately doesn't support directory listing</li>
-                                <li><strong>Alternative:</strong> Create an <code>icons-index.json</code> file listing your icons</li>
+                                <li>Create <code>icons-index.json</code> in your root folder</li>
+                                <li>Add this content:</li>
                             </ol>
+                            <pre style="background: white; padding: 1rem; border-radius: 4px; font-size: 0.8rem; overflow-x: auto; margin: 0.5rem 0;">[
+  {
+    "name": "icn_access_card",
+    "category": "blue-default", 
+    "path": "icons/blue-default/icn_access_card.svg"
+  }
+]</pre>
+                            <div style="font-size: 0.9rem; margin-top: 0.5rem;">
+                                <strong>💡 Tip:</strong> List all your SVG files in this format
+                            </div>
                         </div>
                         
                         <div style="background: #f8fafc; padding: 1rem; border-radius: 6px; font-family: monospace; font-size: 0.8rem; text-align: left;">
-                            <strong>Looking for icons at:</strong><br>
-                            📁 ${getBaseUrl()}icons/blue-default/<br>
-                            📁 ${getBaseUrl()}icons/grey/<br><br>
-                            <strong>Current environment:</strong> ${window.location.protocol}//${window.location.host}
+                            <strong>Verified that these work:</strong><br>
+                            ✅ ${getBaseUrl()}icons/blue-default/icn_access_card.svg<br>
+                            📁 Looking for: ${getBaseUrl()}icons-index.json
                         </div>
                         
                         <button onclick="window.location.reload()" style="margin-top: 1rem; padding: 0.5rem 1rem; background: #3b82f6; color: white; border: none; border-radius: 4px; cursor: pointer;">
@@ -221,22 +328,25 @@ async function initializeIconLibrary() {
             breakdown[icon.category] = (breakdown[icon.category] || 0) + 1;
         });
         
-        console.log(`\n🎉 SUCCESS! Auto-discovered ${discoveredIcons.length} icons!`);
+        console.log(`\n🎉 SUCCESS! Discovered ${discoveredIcons.length} icons!`);
         console.log('📊 Category breakdown:', breakdown);
-        console.log(`🌐 Serving from: ${getBaseUrl()}`);
+        
+        // Generate index file for future use
+        const indexContent = generateIndexFile(discoveredIcons);
+        console.log('\n📝 Generated icons-index.json content (copy this to a file for faster loading):');
+        console.log(indexContent);
         
         // Show success message briefly
         if (iconsGrid) {
-            const originalContent = iconsGrid.innerHTML;
             iconsGrid.innerHTML = `
                 <div style="text-align: center; padding: 2rem; color: #10b981;">
-                    <div style="font-size: 1.2rem; margin-bottom: 0.5rem;">🎉 Auto-discovery successful!</div>
+                    <div style="font-size: 1.2rem; margin-bottom: 0.5rem;">🎉 Discovery successful!</div>
                     <div style="font-size: 0.9rem;">Found ${discoveredIcons.length} icons automatically</div>
                 </div>
             `;
             
             setTimeout(() => {
-                renderIcons(); // This will replace the success message with actual icons
+                renderIcons();
             }, 1500);
         }
         
@@ -249,14 +359,7 @@ async function initializeIconLibrary() {
                 <div style="text-align: center; padding: 2rem; color: #ef4444;">
                     <h3>❌ Discovery Error</h3>
                     <p>${error.message}</p>
-                    <div style="background: #fef2f2; padding: 1rem; border-radius: 6px; margin: 1rem 0; text-align: left; font-family: monospace; font-size: 0.8rem;">
-                        <strong>Debug Info:</strong><br>
-                        URL: ${window.location.href}<br>
-                        Base: ${getBaseUrl()}<br>
-                        Icons: ${getBaseUrl()}icons/<br>
-                        Protocol: ${window.location.protocol}
-                    </div>
-                    <button onclick="window.location.reload()" style="padding: 0.5rem 1rem; background: #ef4444; color: white; border: none; border-radius: 4px; cursor: pointer;">
+                    <button onclick="window.location.reload()" style="padding: 0.5rem 1rem; background: #ef4444; color: white; border: none; border-radius: 4px; cursor: pointer; margin-top: 1rem;">
                         🔄 Retry
                     </button>
                 </div>
@@ -264,6 +367,77 @@ async function initializeIconLibrary() {
         }
     }
 }
+
+// Helper function to create index file
+window.createIconsIndex = function() {
+    if (window.iconsData && window.iconsData.length > 0) {
+        const indexContent = generateIndexFile(window.iconsData);
+        console.log('📝 icons-index.json content:');
+        console.log(indexContent);
+        
+        // Try to download the file
+        const blob = new Blob([indexContent], { type: 'application/json' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = 'icons-index.json';
+        a.click();
+        URL.revokeObjectURL(url);
+        
+        console.log('💾 Downloaded icons-index.json file');
+        console.log('📋 Upload this file to your repository root for faster loading');
+    } else {
+        console.log('❌ No icons loaded yet');
+    }
+};
+
+// Helper to force refresh and bypass index
+window.refreshIcons = function() {
+    console.log('🔄 Forcing fresh icon discovery...');
+    
+    // Clear any cached data
+    window.iconsData = [];
+    window.filteredIcons = [];
+    
+    // Temporarily disable index method by setting a flag
+    window._skipIndex = true;
+    
+    // Reinitialize
+    initializeIconLibrary().then(() => {
+        window._skipIndex = false;
+        console.log('✅ Fresh discovery complete!');
+        console.log('💡 Run createIconsIndex() to generate updated index file');
+    });
+};
+
+// Helper to check if icons have been updated
+window.checkForUpdates = async function() {
+    console.log('🔍 Checking for icon updates...');
+    
+    // Force GitHub API discovery
+    window._skipIndex = true;
+    const freshIcons = await smartDiscoverIcons();
+    window._skipIndex = false;
+    
+    const currentIcons = window.iconsData || [];
+    
+    const currentNames = new Set(currentIcons.map(i => `${i.category}/${i.name}`));
+    const freshNames = new Set(freshIcons.map(i => `${i.category}/${i.name}`));
+    
+    const added = [...freshNames].filter(name => !currentNames.has(name));
+    const removed = [...currentNames].filter(name => !freshNames.has(name));
+    
+    if (added.length > 0 || removed.length > 0) {
+        console.log('🆕 Changes detected!');
+        if (added.length > 0) console.log('➕ Added:', added);
+        if (removed.length > 0) console.log('➖ Removed:', removed);
+        console.log('💡 Run refreshIcons() to update the display');
+        return true;
+    } else {
+        console.log('✅ No changes detected');
+        return false;
+    }
+};
 
 // Auto-initialize when DOM is ready
 if (document.readyState === 'loading') {
