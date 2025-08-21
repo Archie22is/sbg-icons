@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SBG Icon Library</title>
+    <link rel="stylesheet" href="styles/app.css">
+</head>
+<body>
+    <header class="header">
+        <div class="container">
+            <h1>SBG Icon Library</h1>
+            <p>Browse, search, and copy SGB SVG icons for your projects</p>
+        </div>
+    </header>
+
+    <section class="search-section">
+        <div class="container">
+            <div class="search-box">
+                <svg class="search-icon" width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
+                    <path d="M21.71 20.29L18 16.61A9 9 0 1 0 16.61 18l3.68 3.68a1 1 0 0 0 1.42 0 1 1 0 0 0 0-1.39zM11 18a7 7 0 1 1 7-7 7 7 0 0 1-7 7z"/>
+                </svg>
+                <input type="text" class="search-input" placeholder="Search icons..." id="searchInput">
+            </div>
+        </div>
+    </section>
+
+    <main class="main-content">
+        <div class="container">
+            <div class="categories" id="categories">
+                <button class="category-btn active" data-category="all">
+                    <svg class="folder-icon" viewBox="0 0 24 24">
+                        <path d="M10 4H4c-1.11 0-2 .89-2 2v12c0 1.11.89 2 2 2h16c1.11 0 2-.89 2-2V8c0-1.11-.89-2-2-2h-8l-2-2z"/>
+                    </svg>
+                    All Icons
+                </button>
+            </div>
+
+            <div class="stats" id="stats">
+                <span id="totalCount">0 icons total</span>
+                <span id="visibleCount">0 icons visible</span>
+            </div>
+
+            <div class="icons-grid" id="iconsGrid">
+                <!-- Icons will be populated here -->
+            </div>
+
+            <div class="no-results" id="noResults" style="display: none;">
+                <h3>No icons found</h3>
+                <p>Try adjusting your search terms or browse different categories</p>
+            </div>
+        </div>
+    </main>
+
+    <div class="modal" id="copyModal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3 class="modal-title" id="modalTitle">Copy Icon</h3>
+                <button class="close-btn" onclick="closeCopyModal()">&times;</button>
+            </div>
+            <div class="copy-options">
+                <div class="copy-option">
+                    <h4>SVG Code</h4>
+                    <pre id="svgCode"></pre>
+                    <button class="copy-btn" onclick="copyToClipboard('svgCode', 'SVG code')">Copy SVG</button>
+                </div>
+                <div class="copy-option">
+                    <h4>File Path</h4>
+                    <pre id="filePath"></pre>
+                    <button class="copy-btn" onclick="copyToClipboard('filePath', 'file path')">Copy Path</button>
+                </div>
+                <div class="copy-option">
+                    <h4>HTML Image Tag</h4>
+                    <pre id="imgTag"></pre>
+                    <button class="copy-btn" onclick="copyToClipboard('imgTag', 'HTML image tag')">Copy HTML</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="copy-notification" id="copyNotification">
+        Copied to clipboard!
+    </div>
+
+    <script src="scripts/icon-loader.js"></script>
+    <script src="scripts/app.js"></script>
+    <script src="scripts/tools.js"></script>
+
+</body>
+</html>
